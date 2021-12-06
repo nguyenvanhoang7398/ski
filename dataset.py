@@ -1,5 +1,11 @@
+from dataclasses import dataclass
+import copy
 import logging
 import numpy
+import os
+import json
+from dataclasses import dataclass
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -235,3 +241,111 @@ def docred_convert_examples_to_features(
         )
 
     return features
+
+
+class DocREDProcessor(object):
+    """Processor for the DocRED data set."""
+
+    def get_example_from_tensor_dict(self, tensor_dict):
+        """See base class."""
+        return DocREDExample(
+            tensor_dict["guid"].numpy(),
+            tensor_dict["title"].numpy(),
+            tensor_dict["vertexSet"].numpy(),
+            tensor_dict["sents"].numpy(),
+            tensor_dict["labels"].numpy(),
+        )
+
+    def get_train_examples(self, data_dir):
+        """See base class."""
+        with open(os.path.join(data_dir, "train_annotated.json"), 'r') as f:
+            examples = json.load(f)
+        return self._create_examples(examples, 'train')
+
+    def get_distant_examples(self, data_dir):
+        """See base class."""
+        with open(os.path.join(data_dir, "train_distant.json"), 'r') as f:
+            examples = json.load(f)
+        return self._create_examples(examples, 'train')
+
+    def get_dev_examples(self, data_dir):
+        """See base class."""
+        with open(os.path.join(data_dir, "dev.json"), 'r') as f:
+            examples = json.load(f)
+        return self._create_examples(examples, 'dev')
+
+    def get_test_examples(self, data_dir):
+        """See base class."""
+        with open(os.path.join(data_dir, "test.json"), 'r') as f:
+            examples = json.load(f)
+        return self._create_examples(examples, 'test')
+
+    def get_label_map(self, data_dir):
+        """See base class."""
+        with open(os.path.join(data_dir, "label_map.json"), 'r') as f:
+            label_map = json.load(f)
+        return label_map
+
+    def _create_examples(self, instances, set_type):
+        """Creates examples for the training and dev sets."""
+        examples = []
+        for (i, ins) in enumerate(instances):
+            guid = "%s-%s" % (set_type, i)
+            examples.append(DocREDExample(guid=guid,
+                                          title=ins['title'],
+                                          vertexSet=ins['vertexSet'],
+                                          sents=ins['sents'],
+                                          labels=ins['labels'] if set_type!="test" else None))
+        return examples
+
+
+@dataclass(frozen=False)
+class DocREDExample:
+
+    guid: str
+    title: str
+    vertexSet: list
+    sents: list
+    labels: Optional[list] = None
+
+    def to_json_string(self):
+        """Serializes this instance to a JSON string."""
+        return json.dumps(dataclasses.asdict(self), indent=2, sort_keys=True) + "\n"
+
+
+class DocREDInputFeatures(object):
+    """
+    A single set of features of data.
+
+    Args:
+        input_ids: Indices of input sequence tokens in the vocabulary.
+        attention_mask: Mask to avoid performing attention on padding token indices.
+            Mask values selected in ``[0, 1]``:
+            Usually  ``1`` for tokens that are NOT MASKED, ``0`` for MASKED (padded) tokens.
+        token_type_ids: Segment token indices to indicate first and second portions of the inputs.
+        label: Label corresponding to the input
+    """
+
+    def __init__(self, input_ids, attention_mask, token_type_ids, ent_mask, ent_ner, ent_pos, ent_distance, structure_mask, label=None, label_mask=None):
+        self.input_ids = input_ids
+        self.attention_mask = attention_mask
+        self.token_type_ids = token_type_ids
+        self.ent_mask = ent_mask
+        self.ent_ner = ent_ner
+        self.ent_pos = ent_pos
+        self.ent_distance = ent_distance
+        self.structure_mask = structure_mask
+        self.label = label
+        self.label_mask = label_mask
+
+    def __repr__(self):
+        return str(self.to_json_string())
+
+    def to_dict(self):
+        """Serializes this instance to a Python dictionary."""
+        output = copy.deepcopy(self.__dict__)
+        return output
+
+    def to_json_string(self):
+        """Serializes this instance to a JSON string."""
+        return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
