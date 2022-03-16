@@ -1,3 +1,4 @@
+from datetime import datetime
 import torch
 import random
 from torch import nn
@@ -11,6 +12,10 @@ from modeling.modeling_ski import SkiDataLoader, Ski
 import numpy as np
 from tqdm import tqdm
 from utils.io import *
+from torch.utils.tensorboard import SummaryWriter
+
+from modeling.modeling_parallel import SkiDataParallel
+
 
 
 DECODER_DEFAULT_LR = {
@@ -29,6 +34,8 @@ def get_parsed_args():
     parser.add_argument('--do-eval', action='store_true', help="run evaluation")
     parser.add_argument('--do-test', action='store_true', help="run test")
     parser.add_argument('--eval-during-train', action='store_true', help="whether to evaluate during train")
+    parser.add_argument('--parallel', action='store_true', help="whether to run parallel training")
+    parser.add_argument('--baseline', action='store_true', help="whether to run the SSAN baseline")
 
     parser.add_argument('--save_dir', default=f'./saved_models/qagnn/', help='model output directory')
     parser.add_argument('--save_model', dest='save_model', action='store_true')
@@ -102,7 +109,7 @@ def get_parsed_args():
 
 def train(args, dataloader, dev_dataloaer, model):
     args.seed = 42
-    print(args)
+    writer = SummaryWriter(os.path.join(args.exp_name))
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -121,14 +128,21 @@ def train(args, dataloader, dev_dataloaer, model):
     # Load optimizer and scheduler
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
 
+    if args.parallel:
+        encoder_params = model.module.encoder.named_parameters()
+        decoder_params = model.module.decoder.named_parameters()
+    else:
+        encoder_params = model.encoder.named_parameters()
+        decoder_params = model.decoder.named_parameters()
+
     grouped_parameters = [
-        {'params': [p for n, p in model.encoder.named_parameters() if not any(nd in n for nd in no_decay)],
+        {'params': [p for n, p in encoder_params if not any(nd in n for nd in no_decay)],
          'weight_decay': args.weight_decay, 'lr': args.encoder_lr},
-        {'params': [p for n, p in model.encoder.named_parameters() if any(nd in n for nd in no_decay)],
+        {'params': [p for n, p in encoder_params if any(nd in n for nd in no_decay)],
          'weight_decay': 0.0, 'lr': args.encoder_lr},
-        {'params': [p for n, p in model.decoder.named_parameters() if not any(nd in n for nd in no_decay)],
+        {'params': [p for n, p in decoder_params if not any(nd in n for nd in no_decay)],
          'weight_decay': args.weight_decay, 'lr': args.decoder_lr},
-        {'params': [p for n, p in model.decoder.named_parameters() if any(nd in n for nd in no_decay)],
+        {'params': [p for n, p in decoder_params if any(nd in n for nd in no_decay)],
          'weight_decay': 0.0, 'lr': args.decoder_lr},
     ]
     optimizer = OPTIMIZER_CLASSES[args.optim](grouped_parameters)
@@ -153,12 +167,12 @@ def train(args, dataloader, dev_dataloaer, model):
 
     # Preparing parameters
     print('parameters:')
-    for name, param in model.decoder.named_parameters():
+    for name, param in decoder_params:
         if param.requires_grad:
             print('\t{:45}\ttrainable\t{}\tdevice:{}'.format(name, param.size(), param.device))
         else:
             print('\t{:45}\tfixed\t{}\tdevice:{}'.format(name, param.size(), param.device))
-    num_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
+    num_params = sum(p.numel() for p in decoder_params if p.requires_grad)
     print('\ttotal:', num_params)
 
     best_model_path = f"{model_path}.best"
@@ -181,7 +195,7 @@ def train(args, dataloader, dev_dataloaer, model):
         # if epoch_id == args.refreeze_epoch:
         #     freeze_net(model.encoder)
         model.train()
-        for qids, labels, *input_data in tqdm(dataloader.generator(random=False), desc="Training"): # TODO: change this back to True
+        for qids, labels, *input_data in tqdm(dataloader.generator(random=True), desc="Training"): # TODO: change this back to True
             # input_data = *batch_tensors0, *batch_lists0, *batch_tensors1, *batch_lists1, edge_index, edge_type
             # batch_tensors0 = all_input_ids, all_attention_mask, all_token_type_ids, all_ent_mask,
             #                  all_ent_ner, all_ent_pos, all_ent_distance, all_structure_mask, all_label_mask
@@ -219,9 +233,15 @@ def train(args, dataloader, dev_dataloaer, model):
             if (global_step + 1) % args.log_interval == 0:
                 total_loss /= args.log_interval
                 ms_per_batch = 1000 * (time.time() - start_time) / args.log_interval
+                current_lr = scheduler.get_lr()[0]
                 print('| step {:5} |  lr: {:9.7f} | loss {:7.4f} | ms/batch {:7.2f} |'.format(global_step,
-                                                                                              scheduler.get_lr()[0],
+                                                                                              current_lr,
                                                                                               total_loss, ms_per_batch))
+                train_results = {
+                    "lr": current_lr,
+                    "loss": total_loss
+                }
+                writer.add_scalars("train", train_results, global_step=global_step)
                 total_loss = 0
                 start_time = time.time()
             global_step += 1
@@ -231,9 +251,14 @@ def train(args, dataloader, dev_dataloaer, model):
 
         if args.eval_during_train:
             # train_results = evaluate(args, train_dataloader, model)
-            # print("Train results", train_results)
+            # writer.add_scalars("train_eval", train_results, global_step=global_step)
+            # print("-" * 20)
+            # print("Train results")
+            # print(train_results)
             dev_results = evaluate(args, dev_dataloaer, model)
-            print("Dev results", dev_results)
+            writer.add_scalars("dev_eval", dev_results, global_step=global_step)
+            print("-" * 20)
+            print("Dev results")
             print(dev_results)
 
             if dev_results[main_metric] > best_dev_metric:
@@ -498,11 +523,18 @@ def get_data_loaders(args):
 
 if __name__ == "__main__":
     pargs = get_parsed_args()
+    if pargs.baseline:
+        model_name = "ssan"
+    else:
+        model_name = "ski"
+    pargs.exp_name = "{}-{}".format(model_name, datetime.now().strftime("%D-%H-%M-%S").replace("/", "_"))
 
     train_dataloader, validate_dataloader, test_dataloader = get_data_loaders(pargs)
     ski_model = load_model(pargs)
 
     if pargs.do_train:
+        if pargs.parallel:
+            ski_model = SkiDataParallel(ski_model, device_ids=list(range(8)))
         ski_model = train(pargs, train_dataloader, validate_dataloader, ski_model)
     else:
         loaded_state_dict, loaded_args = torch.load(os.path.join(pargs.checkpoint_dir, "model.pt.best"))

@@ -112,11 +112,12 @@ class Ski(nn.Module):
 
         encoder_device = batch_ent_mask.device
         decoder_device = node_type_ids.device
-        encoder_outputs = encoder_outputs.to(decoder_device)
+        # encoder_outputs = encoder_outputs.to(decoder_device)
         context_dim = encoder_outputs.shape[2]
         # IMPORTANT: add fake context state for padding
-        zero_pad_state = torch.zeros((bs, 1, context_dim), dtype=encoder_outputs.dtype, device=decoder_device)
+        zero_pad_state = torch.zeros((bs, 1, context_dim), dtype=encoder_outputs.dtype, device=encoder_device)
         pre_padded_encoder_outputs = torch.cat([zero_pad_state, encoder_outputs], dim=1)
+        pre_padded_encoder_outputs = pre_padded_encoder_outputs.to(decoder_device)
         mention_context_states = self.batched_index_select(pre_padded_encoder_outputs, 1, mention_toks)
 
         # a: with kb, b: without kb
@@ -130,17 +131,25 @@ class Ski(nn.Module):
         # edge_index = (batch_size, 2, n_edges)
         # edge_type = (batch_size, n_edges)
         # this means no kb information is provided
-        context_filled_output = torch.zeros(
-                (bs, doc_len, self.decoder.concept_dim), dtype=encoder_outputs.dtype, device=batch_ent_mask.device)
-        if len(b_indices) > 0:
-            b_encoder_outputs = encoder_outputs[b_indices].to(encoder_device)
-            b_encoder_outputs = self.encoder.dim_reduction(b_encoder_outputs).to(context_filled_output.dtype)
-            b_encoder_outputs = torch.relu(b_encoder_outputs)
-            context_filled_output[b_indices] = b_encoder_outputs
+        # context_filled_output = torch.zeros(
+        #         (bs, doc_len, self.decoder.concept_dim), dtype=encoder_outputs.dtype, device=encoder_device)
+
+        # implement skip connection here as encoder(x) + decoder(encoder(x))
+
+        # if len(b_indices) > 0:
+        #     b_encoder_outputs = encoder_outputs[b_indices].to(encoder_device)
+        #     b_encoder_outputs = self.encoder.dim_reduction(b_encoder_outputs).to(context_filled_output.dtype)
+        #     b_encoder_outputs = torch.relu(b_encoder_outputs)
+        #     context_filled_output[b_indices] = b_encoder_outputs
+
+        encoder_x = self.encoder.dim_reduction(encoder_outputs).to(encoder_outputs.dtype)
+        context_filled_output = torch.relu(encoder_x)
+
         if len(a_indices) > 0:
             a_edge_index, a_edge_type = [edge_index[i] for i in a_indices], [edge_type[i] for i in a_indices]
             a_concept_ids = concept_ids[a_indices]
             a_edge_index, a_edge_type = self.batch_graph(a_edge_index, a_edge_type, a_concept_ids.size(1))
+            # a_edge_index = (2, edge numbers)
             a_node_type_ids = node_type_ids[a_indices]
             # edge_index: [2, total_E]   edge_type: [total_E, ]
             a_adj = (a_edge_index.to(a_node_type_ids.device), a_edge_type.to(a_node_type_ids.device))
@@ -149,17 +158,18 @@ class Ski(nn.Module):
             a_node_scores = node_scores[a_indices]
             a_adj_lengths = adj_lengths[a_indices]
 
+            # use mention encoder as graph input
             gnn_output = self.decoder(a_mention_context_states, a_valid_node_mask, a_concept_ids,
                                       a_node_type_ids, a_node_scores, a_adj_lengths, a_adj,
-                                      emb_data=None, cache_output=cache_output).to(batch_ent_mask.device)
+                                      emb_data=None, cache_output=cache_output).to(encoder_device)
             a_context_filled_output = torch.zeros(
-                (len(a_indices), doc_len, self.decoder.concept_dim), dtype=encoder_outputs.dtype, device=batch_ent_mask.device)
+                (len(a_indices), doc_len, self.decoder.concept_dim), dtype=encoder_outputs.dtype, device=encoder_device)
             max_mention_toks = mention_toks.shape[1]
             context_gnn_output = gnn_output[:, :max_mention_toks, :]
             a_mention_toks = mention_toks[a_indices]
             for i in range(len(a_indices)):
                 a_context_filled_output[i][a_mention_toks[i]] = context_gnn_output[i]
-            context_filled_output[a_indices] = a_context_filled_output
+            context_filled_output[a_indices] = 0.5 * (context_filled_output[a_indices] + a_context_filled_output)
 
         ent_rep = torch.matmul(batch_ent_mask, context_filled_output)
 

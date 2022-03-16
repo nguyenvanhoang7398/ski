@@ -453,9 +453,9 @@ def load_sparse_adj_data_with_contextnode(adj_pk_path, all_tok_kb_ent_edges, max
         for idx, (_data, tok_kb_ent_edges) in tqdm(enumerate(zip(adj_concept_pairs, all_tok_kb_ent_edges)), total=n_samples, desc='loading adj matrices'):
             adj, concepts, ent_mask, cid2score = _data['adj'], _data['concepts'], _data['ent_mask'], _data['ent2score']
             # DEBUG: Change this
-            if ent_mask is None:
-            # half_n_rel = 52
-            # if True:
+            if args.baseline:
+                half_n_rel = 52
+            if args.baseline or ent_mask is None:
                 edge_index.append(torch.zeros((2, 1)))
                 edge_type.append(torch.zeros(1))
                 continue
