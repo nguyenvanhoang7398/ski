@@ -35,9 +35,10 @@ def get_parsed_args():
     parser.add_argument('--do-test', action='store_true', help="run test")
     parser.add_argument('--eval-during-train', action='store_true', help="whether to evaluate during train")
     parser.add_argument('--parallel', action='store_true', help="whether to run parallel training")
-    parser.add_argument('--baseline', action='store_true', help="whether to run the SSAN baseline")
+    parser.add_argument('--model-choice', choices=['ssan', 'ssan_kb', 'ssan_graph', 'ski'], help="model choices")
+    parser.add_argument('--augmentation', action='store_true', help="whether to use augmentation")
 
-    parser.add_argument('--save_dir', default=f'./saved_models/qagnn/', help='model output directory')
+    # parser.add_argument('--save_dir', default=f'./saved_models/qagnn/', help='model output directory')
     parser.add_argument('--save_model', dest='save_model', action='store_true')
     parser.add_argument('--checkpoint_dir', default=None)
 
@@ -523,11 +524,8 @@ def get_data_loaders(args):
 
 if __name__ == "__main__":
     pargs = get_parsed_args()
-    if pargs.baseline:
-        model_name = "ssan"
-    else:
-        model_name = "ski"
-    pargs.exp_name = "{}-{}".format(model_name, datetime.now().strftime("%D-%H-%M-%S").replace("/", "_"))
+    pargs.exp_name = "{}-{}".format(pargs.model_choice, datetime.now().strftime("%D-%H-%M-%S").replace("/", "_"))
+    pargs.save_dir = "./saved_models/{}".format(pargs.exp_name)
 
     train_dataloader, validate_dataloader, test_dataloader = get_data_loaders(pargs)
     ski_model = load_model(pargs)

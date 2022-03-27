@@ -255,6 +255,8 @@ class GNN(nn.Module):
         if init_range > 0:
             self.apply(self._init_weights)
 
+        self.args = args
+
     def _init_weights(self, module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
             module.weight.data.normal_(mean=0.0, std=self.init_range)
@@ -266,6 +268,29 @@ class GNN(nn.Module):
 
     def forward(self, mention_context_states, valid_node_mask, concept_ids, node_type_ids, node_scores, adj_lengths,
                 adj, emb_data=None, cache_output=False):
+        if self.args.model_choice == "ski":
+            return self.forward_ski(mention_context_states, valid_node_mask, concept_ids, node_type_ids, node_scores,
+                                    adj_lengths, adj, emb_data, cache_output)
+        elif self.args.model_choice == "ssan_kb":
+            return self.forward_ssan_kb(concept_ids, node_type_ids, emb_data)
+        elif self.args.model_choice == "ssan_graph":
+            return self.forward_ssan_graph(valid_node_mask, concept_ids, node_type_ids, node_scores, adj, emb_data)
+        else:
+            raise ValueError("Unsupported model choice", self.args.model_choice)
+
+    def forward_ssan_graph(self, valid_node_mask, concept_ids, node_type_ids, node_scores,
+                           adj, emb_data):
+        gnn_input1 = self.concept_emb(concept_ids, emb_data)  # (batch_size, n_node-1, dim_node)
+        gnn_input1 = gnn_input1.to(node_type_ids.device)
+        return self.forward_gnn(gnn_input1, adj, node_type_ids, valid_node_mask, node_scores)
+
+    def forward_ssan_kb(self, concept_ids, node_type_ids, emb_data):
+        gnn_input1 = self.concept_emb(concept_ids, emb_data)  # (batch_size, n_node-1, dim_node)
+        gnn_input1 = gnn_input1.to(node_type_ids.device)
+        return gnn_input1
+
+    def forward_ski(self, mention_context_states, valid_node_mask, concept_ids, node_type_ids, node_scores, adj_lengths,
+                    adj, emb_data=None, cache_output=False):
         """
         context_states: (batch_size, doc_len, dim_sent)
         concept_ids: (batch_size, n_node)
@@ -282,7 +307,9 @@ class GNN(nn.Module):
         gnn_input1 = self.concept_emb(concept_ids, emb_data)    # (batch_size, n_node-1, dim_node)
         gnn_input1 = gnn_input1.to(node_type_ids.device)
         gnn_input = self.dropout_e(torch.cat([gnn_input0, gnn_input1], dim=1))  # (batch_size, n_node, dim_node)
+        return self.forward_gnn(gnn_input, adj, node_type_ids, valid_node_mask, node_scores)
 
+    def forward_gnn(self, gnn_input, adj, node_type_ids, valid_node_mask, node_scores):
         # Normalize node score (use norm from Z)
         _mask = valid_node_mask
         # _mask = (torch.arange(node_scores.size(1), device=node_scores.device) < adj_lengths.unsqueeze(1)).float() #0 means masked out #[batch_size, n_node]

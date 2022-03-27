@@ -145,7 +145,7 @@ def load_bert_xlnet_roberta_input_tensors(statement_jsonl_path, label_map_path, 
                                        sents=ins['sents'],
                                        labels=ins['labels'] if set_type != "test" else None))
 
-        return examples
+        return examples[:20]
 
     def ski_convert_examples_to_features(examples, model_type, tokenizer, kb_ent_idx_map, max_length=512, max_ent_cnt=42,
                                          label_map=None, pad_token=0):
@@ -453,9 +453,9 @@ def load_sparse_adj_data_with_contextnode(adj_pk_path, all_tok_kb_ent_edges, max
         for idx, (_data, tok_kb_ent_edges) in tqdm(enumerate(zip(adj_concept_pairs, all_tok_kb_ent_edges)), total=n_samples, desc='loading adj matrices'):
             adj, concepts, ent_mask, cid2score = _data['adj'], _data['concepts'], _data['ent_mask'], _data['ent2score']
             # DEBUG: Change this
-            if args.baseline:
+            if args.model_choice == "ssan":
                 half_n_rel = 52
-            if args.baseline or ent_mask is None:
+            if args.model_choice == "ssan" or ent_mask is None:
                 edge_index.append(torch.zeros((2, 1)))
                 edge_type.append(torch.zeros(1))
                 continue
